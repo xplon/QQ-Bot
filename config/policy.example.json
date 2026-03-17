@@ -1,0 +1,103 @@
+{
+    "allowPrivate": true,
+    "allowedUsers": [""],
+    "allowedGroups": [""],
+
+    "replyInGroupsOnlyWhenAt": false,
+    "ignoreSelfMessages": true,
+
+    "groupPolicy": {
+        "enabled": true,
+        "botNames": ["", ""],
+        "replyWhenMentionedByName": true,
+        "replyWhenAt": true,
+        "replyWhenDirectQuestion": true,
+        "allowInterrupt": true,
+        "interruptChance": 0.1,
+        "interruptCooldownMs": 600000,
+        "minGroupMessagesBeforeInterrupt": 4,
+        "requireKeywordMatchForInterrupt": false,
+        "activityWindowMs": 120000,
+        "minMsgsInWindow": 5,
+        "idleReviveAfterMs": 900000,
+        "idleReviveChance": 0.2,
+        "maxInterruptsPerHour": 4
+    },
+
+    "maxReplyParts": 4,
+    "maxPartLength": 28,
+    "baseDelayMs": 1200,
+    "randomDelayMs": 2600,
+
+    "context": {
+        "maxHistoryLength": 20,
+        "summaryInputLength": 50,
+        "summaryUpdateInterval": 10
+    },
+
+    "replySplit": {
+        "softLimit": 4,
+        "hardLimit": 8,
+        "shortSentenceThreshold": 6
+    },
+
+    "persona": {
+        "enabled": true,
+        "style": "casual-zh",
+        "stripMarkdown": true,
+        "preferShort": true,
+        "waitForMoreMessagesMs": 1800,
+        "maxConsecutiveReplies": 3
+    },
+
+    "humanState": {
+        "enabled": true,
+        "mode": "simple",
+        "defaultState": "online",
+        "quietHours": {
+            "enabled": true,
+            "startHour": 0,
+            "startMinute": 30,
+            "endHour": 9,
+            "endMinute": 0
+        },
+        "modeDelayExtras": {
+            "interrupt": 2500,
+            "group-question": 800,
+            "private-reply": 0,
+            "group-at": 500,
+            "group-name": 700
+        },
+        "states": {
+            "online": {
+                "replyMultiplier": 1,
+                "delayMultiplier": 1,
+                "allowInterrupt": true
+            },
+            "busy": {
+                "replyMultiplier": 0.7,
+                "delayMultiplier": 1.8,
+                "allowInterrupt": false
+            },
+            "away": {
+                "replyMultiplier": 0.3,
+                "delayMultiplier": 2.5,
+                "allowInterrupt": false
+            },
+            "sleeping": {
+                "replyMultiplier": 0.05,
+                "delayMultiplier": 4,
+                "allowInterrupt": false
+            }
+        }
+    },
+
+    "llm": {
+        "enabled": true,
+        "apiBaseUrl": "https://www.example.com/v1",
+        "apiKey": "sk-",
+        "model": "gpt-5.4",
+        "temperature": 0.8,
+        "maxTokens": 200
+    }
+}
