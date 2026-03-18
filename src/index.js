@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import express from 'express';
 import { WebSocket } from 'ws';
+import { initMcp, getMcpTools, executeMcpTool, getMcpSystemPrompt } from './mcp.js';
 
 const root = path.resolve(process.cwd());
 const configDir = path.join(root, 'config');
@@ -31,6 +32,9 @@ const logStream = fs.createWriteStream(logFile, { flags: 'a' });
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
+
+// 初始化 MCP 工具注册中心
+initMcp(policy, log);
 
 const state = {
     startedAt: new Date().toISOString(),
@@ -382,14 +386,14 @@ function isNameMentioned(evt) {
     // improved matching for English names
     const text = evt.text || '';
     const rawText = evt.raw?.raw_message || '';
-    
+
     // Combine text and raw to ensure we catch everything
     const combined = normalizeForNameMatch(text + ' ' + rawText);
 
     return names.some((name) => {
         const normalizedName = normalizeForNameMatch(name);
         if (!normalizedName) return false;
-        
+
         // Use regex for word boundary check if it contains English letters
         if (/[a-z]/i.test(normalizedName)) {
              try {
@@ -503,10 +507,10 @@ function buildContext(evt) {
              // Look in group history if group chat
              if (evt.chatType === 'group') {
                  const gHist = state.groupMessageHistory.get(String(evt.groupId)) || [];
-                 // Note: groupMessageHistory items don't store messageId currently in pushChatMessage logic above? 
-                 // Wait, I only updated pushChatMessage for the main chatHistory. 
-                 // groupMessageHistory is updated separately inside pushChatMessage. I should update that too if I want global lookup.
-                 // But wait, groupMessageHistory items might not have messageId if I didn't update that part.
+                 const foundInGroup = gHist.find(m => String(m.messageId) === String(evt.replyToId));
+                 if (foundInGroup) {
+                     replyToText = foundInGroup.text;
+                 }
              }
         }
     }
@@ -906,11 +910,18 @@ async function initiateGroupTopic(groupId) {
     }
 }
 
+function calcNextReviveTime() {
+    // 随机 1 到 3 小时后发起一次主动对话
+    const minMs = 60 * 60 * 1000;
+    const maxMs = 3 * 60 * 60 * 1000;
+    return Date.now() + minMs + Math.random() * (maxMs - minMs);
+}
+
 function runInfoLoop() {
     // Check for active revive
     const now = Date.now();
-    const config = policy.groupPolicy?.activeRevive;
-    
+    const config = policy.groupPolicy || {};
+
     if (config?.enabled) {
         const groups = policy.allowedGroups || [];
         for (const gid of groups) {
@@ -933,10 +944,12 @@ function runInfoLoop() {
                     continue;
                 }
                 
-                const prob = config.probability ?? 0.5;
+                const prob = config.idleReviveChance ?? 0.5;
                 if (Math.random() < prob) {
                     log('info', '[revive]', 'triggering', { groupId: gid });
-                    initiateGroupTopic(gid);
+                    initiateGroupTopic(gid).then(r => {
+                        // Success or failure is logged inside initiateGroupTopic
+                    });
                 } else {
                     log('info', '[revive]', 'skip by probability', { groupId: gid });
                 }
@@ -968,15 +981,33 @@ async function generateLlmReply(evt, decision, context) {
         return buildStubReply(evt);
     }
 
+    const mcpPromptText = getMcpSystemPrompt();
+
+    // 动态生成当前的精确时间（强制指定东八区，带上星期几）
+    const currentTimeStr = new Date().toLocaleString('zh-CN', {
+        timeZone: 'Asia/Shanghai',
+        hour12: false,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        weekday: 'long'
+    });
+
     const systemPrompt = [
+        `【当前系统时间】：${currentTimeStr}。`,
         '你在扮演一个真实自然的QQ聊天对象。',
+        '【最高优先级指令】：当用户询问你不知道的事实、实时新闻、天气、或需要联网查询的信息时，你【可能需要】调用对应的工具（如 web_search）获取资料。绝对不要直接用纯文本瞎编！',
         '回复要短，口语化，像真人，不要markdown，不要列表，不要解释自己，不要像客服。',
         '优先写成1到3句自然聊天短句。',
         '每一句都尽量是完整意思，不要硬切半句。',
         '如果内容稍长，可以分成两句，但每句都要像即时聊天里会单独发出去的话。',
         '群聊插话时要轻一点，像顺手接一句，不要突然长篇大论。',
         '被@或被点名时，正常回答，简洁自然。',
-        '如果你想分成多句，请用换行分隔，每行一句。'
+        '如果你想分成多句，请用换行分隔，每行一句。',
+        '注意消息前面的时间戳，如果时间跨度很大，说明可能是新话题；注意不同用户的ID，这是多人在同时聊天，不要把不同人的对话弄混。',
+        mcpPromptText
     ].join(' ');
 
     // Inject Glossary into System Prompt or User Payload?
@@ -988,6 +1019,12 @@ async function generateLlmReply(evt, decision, context) {
     const glossary = state.glossary.get(chatKey);
     const fullSummary = context.summary + (glossary ? `\n\n【术语表/黑话参考】：${glossary}` : '');
 
+    const formattedMessages = (context.recentMessages || []).map(m => {
+        const timeStr = new Date(m.at).toLocaleTimeString('zh-CN', { hour12: false });
+        const speaker = m.role === 'assistant' ? '你' : `[用户${m.userId ? String(m.userId).slice(-4) : '未知'}]`;
+        return `[${timeStr}] ${speaker}: ${m.text}`;
+    });
+
     const userPayload = {
         chatType: evt.chatType,
         mode: decision.mode,
@@ -996,34 +1033,106 @@ async function generateLlmReply(evt, decision, context) {
         message: evt.text,
         replyTo: context.replyToText ? { text: context.replyToText } : undefined,
         summary: fullSummary, // Modified summary with glossary
-        recentMessages: context.recentMessages || []
+        recentMessages: formattedMessages
     };
 
-    const resp = await fetch(`${llm.apiBaseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${llm.apiKey}`
-        },
-        body: JSON.stringify({
+    const messagesPayload = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: JSON.stringify(userPayload) }
+    ];
+
+    try {
+        // 从 mcp.js 动态获取当前启用的工具
+        const activeTools = getMcpTools();
+        const requestBody = {
             model: llm.model,
             temperature: llm.temperature ?? 0.8,
             max_tokens: llm.maxTokens ?? 200,
-            messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: JSON.stringify(userPayload) }
-            ]
-        })
-    });
+            messages: messagesPayload
+        };
 
-    if (!resp.ok) {
-        throw new Error(`llm http ${resp.status}`);
+        if (activeTools && activeTools.length > 0) {
+            requestBody.tools = activeTools;
+            requestBody.tool_choice = "auto";
+            log('info', '[llm-mcp]', '已挂载 MCP 工具并发起请求', { toolsCount: activeTools.length });
+        }
+
+        const resp = await fetch(`${llm.apiBaseUrl}/chat/completions`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${llm.apiKey}`
+            },
+            body: JSON.stringify(requestBody)
+        });
+
+        if (!resp.ok) {
+            const errorBody = await resp.text();
+            throw new Error(`HTTP ${resp.status} - ${errorBody}`);
+        }
+
+        let data = await resp.json();
+        let responseMessage = data?.choices?.[0]?.message;
+
+        log('info', '[llm-mcp]', '首轮响应结果', {
+            hasToolCalls: !!(responseMessage?.tool_calls && responseMessage.tool_calls.length > 0),
+            textContent: responseMessage?.content ? responseMessage.content.substring(0, 30) + '...' : '无纯文本'
+        });
+
+        // 如果 AI 决定调用 MCP 工具
+        if (responseMessage?.tool_calls && responseMessage.tool_calls.length > 0) {
+            log('info', '[llm]', 'AI 触发工具调用', { calls: responseMessage.tool_calls.length });
+            messagesPayload.push(responseMessage);
+
+            for (const toolCall of responseMessage.tool_calls) {
+                // 直接由 mcp.js 调度执行
+                const toolResult = await executeMcpTool(toolCall.function.name, toolCall.function.arguments);
+
+                messagesPayload.push({
+                    role: "tool",
+                    tool_call_id: toolCall.id,
+                    name: toolCall.function.name,
+                    content: String(toolResult)
+                });
+            }
+
+            // 二次请求
+            const secondResp = await fetch(`${llm.apiBaseUrl}/chat/completions`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${llm.apiKey}`
+                },
+                body: JSON.stringify({
+                    model: llm.model,
+                    temperature: llm.temperature ?? 0.8,
+                    max_tokens: llm.maxTokens ?? 200,
+                    messages: messagesPayload
+                })
+            });
+
+            if (!secondResp.ok) {
+                const secondError = await secondResp.text();
+                throw new Error(`Second Call HTTP ${secondResp.status} - ${secondError}`);
+            }
+
+            const secondData = await secondResp.json();
+            const text = secondData?.choices?.[0]?.message?.content?.trim();
+
+            return text || buildStubReply(evt);
+        }
+
+        return responseMessage?.content?.trim() || buildStubReply(evt);
+
+    } catch (err) {
+        log('error', '[llm]', 'generate failed', { error: err?.message || String(err) });
+        return buildStubReply(evt);
     }
 
-    const data = await resp.json();
-    const text = data?.choices?.[0]?.message?.content?.trim();
-
-    return text || buildStubReply(evt);
+    // const data = await resp.json();
+    // const text = data?.choices?.[0]?.message?.content?.trim();
+    //
+    // return text || buildStubReply(evt);
 }
 
 function calcReplyDelayMs() {
@@ -1241,7 +1350,7 @@ function connectEventWs() {
                      state.blockedUsers.add(String(evt.userId));
                      log('info', '[safety]', 'user blocked', { userId: evt.userId });
                      // await sendReply(evt, ['已停止回复你的消息。发送 start 恢复。']);
-                     return; 
+                     return;
                  }
                  if (/\bstart\b/i.test(text)) {
                      state.blockedUsers.delete(String(evt.userId));
@@ -1408,6 +1517,36 @@ app.post('/test/send-private', async (req, res) => {
         log('error', '[test]', 'send-private failed', {
             message: err?.message || String(err)
         });
+        res.status(500).json({ ok: false, error: err?.message || String(err) });
+    }
+});
+
+// ================= 手动测试 MCP 工具的接口 =================
+app.get('/test/mcp/:toolName', async (req, res) => {
+    const toolName = req.params.toolName;
+    const query = req.query.q;
+
+    if (!query) {
+        return res.status(400).json({ ok: false, error: '请在 URL 中提供 q 参数，例如 ?q=上海天气' });
+    }
+
+    log('info', '[test]', `手动触发 MCP 工具: ${toolName}`, { query });
+
+    try {
+        // 模拟 AI 传入的 JSON 字符串参数
+        const argsStr = JSON.stringify({ query: query });
+
+        // 直接调用 mcp.js 里的核心逻辑
+        const result = await executeMcpTool(toolName, argsStr);
+
+        res.json({
+            ok: true,
+            tool: toolName,
+            input: query,
+            result: result // 这里就是原汁原味的爬虫返回结果
+        });
+    } catch (err) {
+        log('error', '[test]', `手动触发工具失败: ${toolName}`, { error: err?.message || String(err) });
         res.status(500).json({ ok: false, error: err?.message || String(err) });
     }
 });

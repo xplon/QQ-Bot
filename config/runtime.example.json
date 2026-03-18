@@ -1,0 +1,18 @@
+{
+  "bridge": {
+    "host": "127.0.0.1",
+    "port": 3102
+  },
+  "napcat": {
+    "wsUrl": "ws://127.0.0.1:3001",
+    "httpUrl": "http://127.0.0.1:3000",
+    "token": "b09384af1cf0"
+  },
+  "openclaw": {
+    "mode": "stub",
+    "webhookUrl": "http://127.0.0.1:3102/openclaw/reply"
+  },
+  "logging": {
+    "level": "info"
+  }
+}

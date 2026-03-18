@@ -99,5 +99,15 @@
         "model": "gpt-5.4",
         "temperature": 0.8,
         "maxTokens": 200
+    },
+
+    "mcp": {
+        "enabled": true,
+        "tools": {
+            "web_search": {
+                "enabled": true,
+                "description": "允许 AI 搜索互联网获取最新信息"
+            }
+        }
     }
 }

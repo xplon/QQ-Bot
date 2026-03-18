@@ -1,2 +1,5 @@
 /logs
 /node_modules
+
+/config/policy.json
+/config/runtime.json
