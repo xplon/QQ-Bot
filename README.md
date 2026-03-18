@@ -2,202 +2,104 @@
 
 一个运行在本地的 QQ 桥接器，用于将 NapCatQQ / OneBot 接入一个具备“拟人化聊天行为”的智能回复系统。
 
-当前项目的目标，不只是“自动回复”，而是构建一个更像真人的聊天代理：
+当前项目的目标，不只是简单的“自动回复”，而是构建一个高拟真、具备行为特征的聊天代理（Behavioral Agent）：
 
-- 能通过 NapCatQQ + OneBot 实时收发 QQ 消息
-- 能基于白名单控制接入范围
-- 能区分私聊和群聊行为
-- 能实现基础的人类化延迟、等待、分段回复
-- 能在群聊中根据策略决定是否接话、插话、或保持沉默
-- 能接入大模型生成回复内容
-- 后续可继续接入 OpenClaw 作为更完整的对话与记忆中枢
+- [x] 能通过 NapCatQQ + OneBot 实时收发 QQ 消息
+- [x] 能基于白名单配置严格控制接入范围
+- [x] 能精准区分私聊和群聊的行为模式
+- [x] 能实现人类化延迟、多消息等待、分段回复策略
+- [x] 能在群聊中根据上下文和策略决定是否接话、插话、或保持沉默
+- [x] 能接入大型语言模型（LLM）生成拟人化对话，并引入 MCP（Model Context Protocol）工具扩展能力
+- [ ] 构建深度个性化与长期记忆
 
 ---
 
 ## 项目现状
 
-目前这套桥接器已经完成了以下关键能力：
+目前这套桥接器已经作为一个健壮的核心服务在运行，具备了以下关键能力：
 
-### 已完成
+### 已完成核心能力
 
-- NapCatQQ + OneBot 正式路径打通
-- 桥接器可通过 WebSocket 接收 QQ 消息事件
-- 桥接器可通过 WebSocket 调用 OneBot API 发送消息
-- 已支持私聊白名单
-- 已支持群聊白名单
-- 已支持基础群聊触发策略：
-  - 被 `@` 时回复
-  - 可扩展为被名字点到时回复
-  - 可扩展为群聊插话
-- 已支持拟人化等待：
-  - 等更多消息再回复
-  - 随机延迟
-  - 分段发送
-- 已支持基础日志与状态调试：
-  - `/health`
-  - `/debug/state`
-  - `/debug/config`
-  - `logs/bridge.log`
-- 已完成从 stub 回复逻辑向 LLM 回复逻辑的架构升级设计
+1. **底层链路打通与状态管理**
+   - 稳定连接 NapCatQQ 的 OneBot WebSocket 接口（双路：Event + API）。
+   - 实现运行状态的本地持久化（`state.json`），支持重启后词汇表、对话历史、阻断状态的恢复。
 
-### 当前架构方向
+2. **多模态与工具扩展（MCP）**
+   - 已初步集成 MCP 服务机制，目前支持通过 Web Search 工具获取世界最新信息。
+   - LLM 支持通过函数调用（Tool Calling）来获取外部数据并融入聊天。
 
-系统职责被逐步拆成三层：
+3. **精细化的触发与过滤策略**
+   - 私聊与群聊的独立白名单。
+   - 群聊场景下的多样化触发：被 `@`、名字被叫到、直接的疑问句，以及根据概率和上下文自动“插话”。
+   - 支持动态屏蔽（block）特定用户。
 
-1. **Transport Layer**
-   - NapCat / OneBot 接入
-   - 负责收消息、发消息、连接状态维护
+4. **高度拟人化行为（Behavioral Mimicry）**
+   - **作息与忙碌状态**：根据当前时间自动判断“sleeping”、“online”、“busy”或“away”，并映射到不同的回复延迟机制。
+   - **阅读与打字延迟**：结合基准延迟、随机抖动，以及不同触发条件下的额外延迟（如插话等待更久，被 @ 快速响应）。
+   - **短句切分与口语化**：支持过滤 Markdown，将长段落切分为多个按人类习惯发送的短句（识别逗号、句号进行自然切断），并进行基础口语化词汇替换。
+   - **防连发等待机制**：检测到频繁交互时启动挂起机制，积累几句话后一并回复。
 
-2. **Decision Layer**
-   - 负责决定：
-     - 要不要回复
-     - 为什么回复
-     - 什么时候回复
-     - 是普通回复、被点名回复、被 @ 回复、还是插话
-
-3. **Reply Layer**
-   - 负责生成具体回复文本
-   - 当前可使用 stub 或 LLM
-   - 后续可切换为 OpenClaw
+5. **系统可观测性**
+   - 详尽的日志输出与文件流（`logs/bridge.log`）。
+   - 请求级与应用级状态信息。
 
 ---
 
-## 设计目标
+## 架构演进与设想
 
-这个项目不是一个“关键词触发器”，而是一个偏行为代理（behavioral agent）：
+当前系统职责已清晰拆分成三层，并逐步向更复杂的“思考-决策-记忆”闭环演进：
 
-### 私聊目标
-
-- 像真人一样对话
-- 不要每次都秒回
-- 能保持最近上下文
-- 风格偏口语、短句、自然
-
-### 群聊目标
-
-- 默认安静，不刷存在感
-- 被明确点名时再发言
-- 在合适时机低频插话
-- 插话要像顺手接一句，而不是突然长篇输出
-
-### 人类化目标
-
-- 有作息、忙碌状态、在/不在感
-- 能模拟“稍后回复”
-- 能把较长内容拆成自然聊天短句，而不是机械切片
-- 后续可扩展主动发消息能力
+1. **Transport Layer（传输层）**：负责通过 WebSocket 与 NapCat/OneBot 进行消息接收和下发。
+2. **Decision Layer（决策层）**：判断当前该不该回复？为何回复（被提到还是插话）？要等多久？（在此阶段加入了人设状态与防频控）。
+3. **Reply Layer（回复层）**：结合 LLM、上下文历史缓存（近期记忆）、MCP 工具，生成符合 persona 的回复。
 
 ---
 
-## 技术栈
+## 展望（NEXT ACTIONS）
 
-- **Node.js**
-- **Express**
-- **ws**
-- **NapCatQQ**
-- **OneBot**
-- **LLM API（OpenAI 兼容接口优先）**
+目前项目已经跑通了拟议中的基础拟人机制。随着架构成熟，接下来的发展方向将从“行为模拟”走向“深度认知与长时陪伴”，主要目标如下：
+
+1. **持久化私聊、群聊用户的画像**
+   - 收集用户的喜好、口头禅、身份信息并存储到数据库或本地磁盘，使其对话越来越符合“老熟人”的特质。
+2. **实现长期记忆而非现在的近期记忆**
+   - 突破目前内存中 `state.chatHistory` 的容量瓶颈，引入向量数据库或记忆检索系统，能够回忆几天、几周前聊过的话题。
+3. **检测当前对象 / 群内情绪状态**
+   - 通过 LLM 或专门的模型分析当前的对话氛围（如：热烈、愤怒、悲伤、闲暇），并据此动态调整机器人的接话意愿、语气和安抚策略。
+4. **厘清消息的对话线，区分并行话题**
+   - 在高并发的群聊中，区分多位用户可能正在并行的讨论 2-3 个不同话题，使机器人能精准接续其中特定的上下文，防止“胡乱缝合”。
+5. **接入表情包和图片识别**
+   - 打破目前的纯文本限制。支持解析拉取到的图文消息（OCR与图像理解），并能够回应相应的表情包或基于图文做梗图互动。
 
 ---
 
-## 目录结构建议
+## 目录结构
 
 ```txt
 qq-bridge/
 ├── config/
 │   ├── runtime.json
-│   ├── runtime.example.json
 │   ├── policy.json
-│   └── policy.example.json
+│   └── (其他配置文件示例.example.json)
 ├── logs/
-│   └── bridge.log
+│   ├── bridge.log
+│   └── state.json          # 运行时状态记忆持久化
+├── docs/                   # 项目说明与阶段性设计文档
 ├── src/
-│   ├── index.js
+│   ├── index.js            # 主程序入口（决策+业务串联）
+│   ├── mcp.js              # Model Context Protocol 工具链集成
 │   └── README.md
 ├── package.json
 └── README.md
 ```
 
----
+## 启动方式
 
-## 配置说明
-
-### `config/runtime.json`
-
-运行时配置，主要包括：
-
-- bridge 监听地址
-- NapCat / OneBot 连接地址
-- token
-- 回复模式
-- 日志设置
-
-示例：
-
-```json
-{
-  "bridge": {
-    "host": "127.0.0.1",
-    "port": 3102
-  },
-  "napcat": {
-    "wsUrl": "ws://127.0.0.1:3001",
-    "httpUrl": "http://127.0.0.1:3000",
-    "token": "your_token"
-  },
-  "openclaw": {
-    "mode": "stub",
-    "webhookUrl": "http://127.0.0.1:3102/openclaw/reply"
-  },
-  "logging": {
-    "level": "info",
-    "fileName": "bridge.log"
-  }
-}
+```bash
+npm install
+npm run dev
+# 或
+npm start
 ```
-
-### `config/policy.json`
-
-行为策略配置，主要包括：
-
-- 私聊/群聊白名单
-- 群聊触发规则
-- 拟人化等待参数
-- 人类状态参数
-- LLM 配置
-
-一个典型示例：
-
-```json
-{
-  "allowPrivate": true,
-  "allowedUsers": ["2423587736"],
-  "allowedGroups": ["123456789"],
-  "replyInGroupsOnlyWhenAt": false,
-  "ignoreSelfMessages": true,
-
-  "maxReplyParts": 4,
-  "maxPartLength": 28,
-  "baseDelayMs": 1200,
-  "randomDelayMs": 2600,
-
-  "persona": {
-    "enabled": true,
-    "style": "casual-zh",
-    "stripMarkdown": true,
-    "preferShort": true,
-    "waitForMoreMessagesMs": 1800,
-    "maxConsecutiveReplies": 3
-  },
-
-  "groupPolicy": {
-    "enabled": true,
-    "botNames": ["机器人名字", "机器人昵称"],
-    "replyWhenMentionedByName": true,
-    "replyWhenAt": true,
-    "replyWhenDirectQuestion": false,
-    "allowInterrupt": true,
-    "interruptChance": 0.12,
     "interruptCooldownMs": 900000,
     "minGroupMessagesBeforeInterrupt": 5
   },
